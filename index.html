@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Custom Gesture Guitar App</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      background: #0d0e12;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      color: #fff;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      overflow: hidden;
+    }
+    #container {
+      position: relative;
+      width: 90vw;
+      max-width: 1000px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px rgba(255, 140, 0, 0.25);
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      background: #000;
+    }
+    #status-overlay {
+      position: absolute;
+      bottom: 35px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15, 15, 20, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 140, 0, 0.5);
+      padding: 12px 28px;
+      border-radius: 30px;
+      font-size: 20px;
+      font-weight: 600;
+      color: #ffaa00;
+      letter-spacing: 1px;
+      text-shadow: 0 0 10px rgba(255, 170, 0, 0.5);
+      pointer-events: none;
+      text-align: center;
+    }
+    #start-btn {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: linear-gradient(135deg, #ff8c00, #e65100);
+      color: white;
+      padding: 16px 36px;
+      font-size: 18px;
+      font-weight: bold;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      box-shadow: 0 10px 25px rgba(255, 140, 0, 0.4);
+      transition: all 0.3s ease;
+      z-index: 10;
+    }
+    #start-btn:hover {
+      transform: translate(-50%, -50%) scale(1.05);
+      box-shadow: 0 15px 35px rgba(255, 140, 0, 0.6);
+    }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+  <div id="container">
+    <button id="start-btn">Click to Start Synth 🎵</button>
+    <div id="status-overlay">Show your hands to play...</div>
+    <video id="input_video" style="display:none;"></video>
+    <canvas id="output_canvas" width="1280" height="720"></canvas>
+  </div>
+
+  <script>
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const statusOverlay = document.getElementById('status-overlay');
+    const startBtn = document.getElementById('start-btn');
+
+    let synth, waveformAnalyser;
+    let currentChordKey = "";
+    let activeNotes = [];
+
+    // Full Octave Rich Harmonics Chords
+    const CHORD_NOTES = {
+      'C_Major': ["C3", "G3", "C4", "E4"], 'C_Minor': ["C3", "G3", "C4", "Eb4"],
+      'D_Major': ["D3", "A3", "D4", "F#4"], 'D_Minor': ["D3", "A3", "D4", "F4"],
+      'E_Major': ["E3", "B3", "E4", "G#4"], 'E_Minor': ["E3", "B3", "E4", "G4"],
+      'F_Major': ["F3", "C4", "F4", "A4"], 'F_Minor': ["F3", "C4", "F4", "Ab4"],
+      'G_Major': ["G3", "D4", "G4", "B4"], 'G_Minor': ["G3", "D4", "G4", "Bb4"],
+      'A_Major': ["A2", "E3", "A3", "C#4"], 'A_Minor': ["A2", "E3", "A3", "C4"],
+      'B_Major': ["B2", "F#3", "B3", "D#4"], 'B_Minor': ["B2", "F#3", "B3", "D4"],
+
+      'C_Maj7': ["C3", "E3", "G3", "B3"], 'D_Maj7': ["D3", "F#3", "A3", "C#4"],
+      'E_Maj7': ["E3", "G#3", "B3", "D#4"], 'F_Maj7': ["F3", "A3", "C4", "E4"],
+      'G_Maj7': ["G3", "B3", "D4", "F#4"], 'A_Maj7': ["A2", "C#3", "E3", "G#3"],
+      'B_Maj7': ["B2", "D#3", "F#3", "A#3"],
+
+      'C_Sharp': ["C#3", "G#3", "C#4", "F4"], 'D_Sharp': ["D#3", "A#3", "D#4", "G4"],
+      'F_Sharp': ["F#3", "C#4", "F#4", "A#4"], 'G_Sharp': ["G#3", "D#4", "G#4", "C5"],
+      'A_Sharp': ["A#2", "F3", "A#3", "D4"],
+
+      'D_Flat': ["Db3", "Ab3", "Db4", "F4"], 'E_Flat': ["Eb3", "Bb3", "Eb4", "G4"],
+      'G_Flat': ["Gb3", "Db4", "Gb4", "Bb4"], 'A_Flat': ["Ab2", "Eb3", "Ab3", "C4"],
+      'B_Flat': ["Bb2", "F3", "Bb3", "D4"]
+    };
+
+    startBtn.addEventListener('click', async () => {
+      await Tone.start();
+      startBtn.style.display = 'none';
+
+      waveformAnalyser = new Tone.Analyser("waveform", 256);
+
+      // Studio Effects Chain: Reverb + Chorus + Filter for a full tone
+      const reverb = new Tone.Reverb({ decay: 3, wet: 0.4 }).toDestination();
+      const chorus = new Tone.Chorus(3, 2.5, 0.4).connect(reverb);
+      const filter = new Tone.Filter(1200, "lowpass").connect(chorus);
+
+      // Deep, Rich FM Synth Engine
+      synth = new Tone.PolySynth(Tone.FMSynth, {
+        harmonicity: 2,
+        modulationIndex: 1.5,
+        oscillator: { type: "triangle" },
+        envelope: { attack: 0.1, decay: 0.2, sustain: 0.9, release: 0.5 }
+      }).chain(filter, waveformAnalyser);
+
+      statusOverlay.innerText = "Camera initializing...";
+      initHandTracking();
+    });
+
+    function isFingerUp(landmarks, tipIdx, pipIdx) {
+      return landmarks[tipIdx].y < landmarks[pipIdx].y;
+    }
+
+    function countOpenFingers(landmarks) {
+      let count = 0;
+      if (landmarks[4].x < landmarks[3].x) count++;
+      if (isFingerUp(landmarks, 8, 6)) count++;
+      if (isFingerUp(landmarks, 12, 10)) count++;
+      if (isFingerUp(landmarks, 16, 14)) count++;
+      if (isFingerUp(landmarks, 20, 18)) count++;
+      return count;
+    }
+
+    // Glowing Orange Waveform Visualizer
+    function drawAudioWaveform() {
+      if (!waveformAnalyser) return;
+      const values = waveformAnalyser.getValue();
+
+      canvasCtx.beginPath();
+      canvasCtx.lineWidth = 4;
+      canvasCtx.strokeStyle = "#ff7700";
+      canvasCtx.shadowBlur = 15;
+      canvasCtx.shadowColor = "#ff5500";
+
+      const sliceWidth = canvasElement.width / values.length;
+      let x = 0;
+
+      for (let i = 0; i < values.length; i++) {
+        const v = values[i];
+        const y = (v * 110) + (canvasElement.height * 0.78);
+
+        if (i === 0) canvasCtx.moveTo(x, y);
+        else canvasCtx.lineTo(x, y);
+
+        x += sliceWidth;
+      }
+
+      canvasCtx.stroke();
+      canvasCtx.shadowBlur = 0;
+    }
+
+    function initHandTracking() {
+      const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      });
+
+      hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6
+      });
+
+      hands.onResults((results) => {
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+        // Mirror View
+        canvasCtx.translate(canvasElement.width, 0);
+        canvasCtx.scale(-1, 1);
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+        let selectedRoot = "";
+        let selectedType = "Major";
+        let leftFingersCount = 0;
+
+        if (results.multiHandLandmarks && results.multiHandedness) {
+          for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+            const landmarks = results.multiHandLandmarks[i];
+            const label = results.multiHandedness[i].label;
+
+            // Draw Dots
+            for (let point of landmarks) {
+              let x = point.x * canvasElement.width;
+              let y = point.y * canvasElement.height;
+              canvasCtx.beginPath();
+              canvasCtx.arc(x, y, 4, 0, 2 * Math.PI);
+              canvasCtx.fillStyle = label === 'Right' ? '#ffaa00' : '#00e5ff';
+              canvasCtx.fill();
+            }
+
+            const indexUp = isFingerUp(landmarks, 8, 6);
+            const middleUp = isFingerUp(landmarks, 12, 10);
+            const ringUp = isFingerUp(landmarks, 16, 14);
+            const pinkyUp = isFingerUp(landmarks, 20, 18);
+
+            // RIGHT HAND: CHORD ROOT & TILT
+            if (label === 'Right') {
+              if (indexUp && pinkyUp && !middleUp && !ringUp) {
+                selectedRoot = "A";
+              } else if (indexUp && pinkyUp && middleUp && !ringUp) {
+                selectedRoot = "B";
+              } else {
+                let rightCount = countOpenFingers(landmarks);
+                if (rightCount === 1) selectedRoot = "C";
+                else if (rightCount === 2) selectedRoot = "D";
+                else if (rightCount === 3) selectedRoot = "E";
+                else if (rightCount === 4) selectedRoot = "F";
+                else if (rightCount === 5) selectedRoot = "G";
+              }
+
+              let wrist = landmarks[0];
+              let middleMcp = landmarks[9];
+              let tiltDiff = middleMcp.x - wrist.x;
+
+              if (tiltDiff > 0.02) selectedType = "Major";
+              else if (tiltDiff < -0.02) selectedType = "Minor";
+            }
+
+            // LEFT HAND: STRUM TRIGGER
+            if (label === 'Left') {
+              leftFingersCount = countOpenFingers(landmarks);
+            }
+          }
+
+          canvasCtx.restore();
+          drawAudioWaveform();
+
+          // CONTINUOUS SOUND LOGIC
+          if (selectedRoot !== "" && leftFingersCount >= 1 && leftFingersCount <= 4) {
+            let chordKey = "";
+            let modeText = "";
+
+            if (leftFingersCount === 1) { chordKey = `${selectedRoot}_${selectedType}`; modeText = `${selectedType}`; }
+            else if (leftFingersCount === 2) { chordKey = `${selectedRoot}_Maj7`; modeText = "Maj7"; }
+            else if (leftFingersCount === 3) { chordKey = `${selectedRoot}_Sharp`; modeText = "Sharp (#)"; }
+            else if (leftFingersCount === 4) { chordKey = `${selectedRoot}_Flat`; modeText = "Flat (b)"; }
+
+            let targetNotes = CHORD_NOTES[chordKey] || CHORD_NOTES[`${selectedRoot}_Major`];
+
+            statusOverlay.innerText = `Playing: ${selectedRoot} ${modeText} 🎸`;
+
+            // If new chord key or sound was stopped, triggerAttack continuously
+            if (currentChordKey !== chordKey) {
+              if (activeNotes.length > 0) {
+                synth.releaseAll();
+              }
+              synth.triggerAttack(targetNotes);
+              activeNotes = targetNotes;
+              currentChordKey = chordKey;
+            }
+          } else {
+            // Finger down -> Stop Sound
+            if (activeNotes.length > 0) {
+              synth.releaseAll();
+              activeNotes = [];
+              currentChordKey = "";
+            }
+            if (selectedRoot !== "") {
+              statusOverlay.innerText = `Selected Root: ${selectedRoot} | Raise Left Finger to Sound 🔊`;
+            } else {
+              statusOverlay.innerText = "Right Hand: Select Root (1=C, 2=D, 3=E, 4=F, 5=G, 🤟=A, 🤘=B)";
+            }
+          }
+        } else {
+          if (activeNotes.length > 0) {
+            synth.releaseAll();
+            activeNotes = [];
+            currentChordKey = "";
+          }
+          canvasCtx.restore();
+          drawAudioWaveform();
+          statusOverlay.innerText = "Dono haath camera ke samne layein...";
+        }
+      });
+
+      const camera = new Camera(videoElement, {
+        onFrame: async () => {
+          await hands.send({ image: videoElement });
+        },
+        width: 1280,
+        height: 720
+      });
+      camera.start();
+    }
+  </script>
+</body>
+</html>
